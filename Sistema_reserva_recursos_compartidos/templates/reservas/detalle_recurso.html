@@ -1,0 +1,206 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Detalle del recurso{% endblock %}
+
+{% block navbar_right %}
+<span class="text-white me-3">
+  Cliente: {{ cliente.nombre|default:cliente.identificador_externo }}
+</span>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col-lg-8">
+    <h1 class="h3 mb-1">Recurso: {{ recurso.nombre|default:recurso.codigo }}</h1>
+    <p class="text-muted mb-0">
+      Código: {{ recurso.codigo }} · Nodo actual: {{ cliente.identificador_externo }}
+    </p>
+  </div>
+</div>
+
+<div class="row g-4">
+  <!-- Columna izquierda: info y acciones -->
+  <div class="col-lg-4">
+    <div class="card shadow-sm mb-3">
+      <div class="ratio ratio-16x9">
+        <img
+          src="{% static 'img/recursos/' %}{{ recurso.codigo|lower }}.jpg"
+          onerror="this.onerror=null;this.src='{% static 'img/recursos/default.jpg' %}';"
+          class="card-img-top"
+          alt="Imagen del recurso {{ recurso.codigo }}"
+        >
+      </div>
+      <div class="card-body">
+        <h5 class="card-title mb-1">{{ recurso.nombre|default:recurso.codigo }}</h5>
+        <p class="card-subtitle text-muted small mb-3">
+          Código: {{ recurso.codigo }}
+        </p>
+
+        <p class="small mb-3">
+          {{ recurso.descripcion|default:'Recurso compartido sobre el que se aplica el algoritmo de exclusión mutua distribuida con relojes de Lamport.' }}
+        </p>
+
+        <p class="mb-2">
+          Estado del recurso:
+          {% if recurso.estado_recurso == 'DISPONIBLE' %}
+            <span class="badge bg-success">Disponible</span>
+          {% elif recurso.estado_recurso == 'OCUPADO' %}
+            <span class="badge bg-danger">Ocupado</span>
+          {% else %}
+            <span class="badge bg-secondary">Fuera de servicio</span>
+          {% endif %}
+        </p>
+
+        <hr>
+
+        <div class="d-grid gap-2">
+          <button id="btn-solicitar" class="btn btn-primary">
+            Solicitar acceso al recurso
+          </button>
+          <button id="btn-liberar" class="btn btn-outline-danger">
+            Liberar recurso (si está activo)
+          </button>
+        </div>
+
+        <p class="small text-muted mt-3 mb-0">
+          Abre esta misma pantalla en varias pestañas con distintos clientes para
+          observar cómo se ordena la cola según el reloj de Lamport y cómo se
+          garantiza que solo un nodo tenga el recurso activo.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Columna derecha: cola -->
+  <div class="col-lg-8">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title mb-3">Cola de solicitudes</h5>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead class="table-light">
+              <tr>
+                <th>#</th>
+                <th>Cliente</th>
+                <th>Estado</th>
+                <th>Reloj de Lamport</th>
+                <th>Prioridad</th>
+              </tr>
+            </thead>
+            <tbody id="tabla-cola">
+              <tr>
+                <td colspan="5" class="text-center text-muted">
+                  Cargando cola...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="small text-muted mt-3 mb-0">
+          La cola se ordena por <strong>(reloj_lamport, prioridad_id)</strong>,
+          implementando el orden lógico del algoritmo de Lamport.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<a href="{% url 'lista_recursos' cliente.id %}" class="btn btn-link mt-4">
+  &larr; Volver a recursos
+</a>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  const recursoId = "{{ recurso.id }}";
+  const clienteId = "{{ cliente.id }}";
+
+  async function cargarCola() {
+    const resp = await fetch(`/api/recursos/${recursoId}/cola/`);
+    const data = await resp.json();
+
+    const tbody = document.getElementById('tabla-cola');
+    tbody.innerHTML = '';
+
+    if (data.length === 0) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td colspan="5" class="text-center text-muted">
+          No hay solicitudes en la cola para este recurso.
+        </td>
+      `;
+      tbody.appendChild(tr);
+      return;
+    }
+
+    data.forEach((item, idx) => {
+      const tr = document.createElement('tr');
+
+      let badgeEstado = '';
+      if (item.estado === 'ACTIVA') {
+        badgeEstado = '<span class="badge bg-success">ACTIVA</span>';
+      } else if (item.estado === 'EN_COLA') {
+        badgeEstado = '<span class="badge bg-warning text-dark">EN COLA</span>';
+      } else {
+        badgeEstado = `<span class="badge bg-secondary">${item.estado}</span>`;
+      }
+
+      tr.innerHTML = `
+        <td>${idx + 1}</td>
+        <td>${item.cliente}</td>
+        <td>${badgeEstado}</td>
+        <td>${item.reloj_lamport}</td>
+        <td>${item.prioridad_id}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  document.getElementById('btn-solicitar').onclick = async () => {
+    await fetch(`/api/recursos/${recursoId}/solicitar/`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        cliente_id: clienteId,
+        ts_cliente: Date.now()
+      }),
+    });
+    // La cola se refrescará por WebSocket, pero cargamos una vez por si acaso
+    cargarCola();
+  };
+
+  document.getElementById('btn-liberar').onclick = async () => {
+    await fetch(`/api/recursos/${recursoId}/liberar/`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        cliente_id: clienteId
+      }),
+    });
+    cargarCola();
+  };
+
+  // WebSocket para notificaciones en tiempo real
+  const wsScheme = window.location.protocol === "https:" ? "wss" : "ws";
+  const socket = new WebSocket(
+    wsScheme + '://' + window.location.host + `/ws/recursos/${recursoId}/`
+  );
+
+  socket.onopen = () => {
+    console.log("WebSocket conectado");
+    cargarCola();
+  };
+
+  socket.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.tipo === 'cola_actualizada') {
+      cargarCola();
+    }
+  };
+
+  socket.onclose = () => {
+    console.log("WebSocket cerrado");
+  };
+</script>
+{% endblock %}
